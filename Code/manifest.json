@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Extractor de páginas web",
+  "version": "1.0",
+  "description": "Disparador manual y automático para extraer contenido web",
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Capturar esta página"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
