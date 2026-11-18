@@ -1,7 +1,35 @@
 //Opera de fondo escuchando si se activa el disparador manual para realizar la lectura.
 const SERVER_URL = "http://localhost:8000/api/guardar";
-const API_KEY = "Mi-clave-secreta-2026";
+const API_KEY = "MI.Clave.Secreta.2004";
 
+// Clave compartida de EXACTAMENTE 32 caracteres (debe ser idéntica en servidor.py)
+const CLAVE_TRANSPORTE = "!!ClaveSecretaDe32Caracteres2015";
+
+// Cifra el paquete con AES-GCM antes de enviarlo por red
+async function cifrarPaquete(objeto) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(CLAVE_TRANSPORTE),
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"]
+  );
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const datosPlanos = enc.encode(JSON.stringify(objeto));
+
+  const cifradoBuffer = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv },
+    keyMaterial,
+    datosPlanos
+  );
+
+  return {
+    iv: btoa(String.fromCharCode(...iv)),
+    payload_cifrado: btoa(String.fromCharCode(...new Uint8Array(cifradoBuffer)))
+  };
+}
 
 // Crea la opción en el menú de clic derecho al instalar la extensión
 browser.runtime.onInstalled.addListener(() => {
@@ -43,20 +71,22 @@ browser.runtime.onMessage.addListener((mensaje) => {
 // Envía los mensajes al servidor
 async function enviarAlServidor(paquete, esReintento = false) {
   try {
+    const sobreCifrado = await cifrarPaquete(paquete);
+
     const respuesta = await fetch(SERVER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-API-Key": API_KEY
       },
-      body: JSON.stringify(paquete)
+      body: JSON.stringify(sobreCifrado)
     });
 
     if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
 
     // Éxito: mostramos badge verde temporalmente
     mostrarEstado("✓", "#22c55e");
-    console.log("Enviado y guardado en servidor:", paquete.origen);
+    console.log("Enviado (cifrado) y guardado en servidor:", paquete.origen);
     return true;
 
   } catch (error) {

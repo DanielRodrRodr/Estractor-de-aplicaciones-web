@@ -7,11 +7,8 @@ const DOMINIOS_AUTOMATICOS = [
 const dominioActual = window.location.hostname;
 const historialEnviados = new Set();
 
-// Bandera para ignorar los mensajes antiguos que ya están en pantalla al abrir la web
-let modoCalibracion = true;
-
-// Guardamos el instante exacto en que empieza la transmisión (con 60s de margen por redondeo de minutos)
-const timestampInicio = Date.now() - 60000;
+// Durante los primeros segundos solo captura los chats marcados como "sin leer"
+let esPrimeraPasada = true;
 
 // Función auxiliar para crear una huella única rápida de cada texto
 function generarHuella(texto) {
@@ -27,38 +24,17 @@ function obtenerHoraActual() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// Comprueba si la hora extraída (ej. "12:54") es igual o posterior al inicio de la ejecución
-function esMensajeMasReciente(horaTexto) {
-  if (!horaTexto) return false;
-  
-  // Busca formato HH:MM (24h o 12h AM/PM). Si pone "Ayer", "lun." o fecha pasada, devuelve false
-  const coincidencia = horaTexto.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-  if (!coincidencia) return false;
-
-  let horas = parseInt(coincidencia[1], 10);
-  const minutos = parseInt(coincidencia[2], 10);
-  const periodo = coincidencia[3]?.toUpperCase();
-
-  if (periodo === "PM" && horas < 12) horas += 12;
-  if (periodo === "AM" && horas === 12) horas = 0;
-
-  const fechaMensaje = new Date();
-  fechaMensaje.setHours(horas, minutos, 0, 0);
-
-  return fechaMensaje.getTime() >= timestampInicio;
-}
-
 // Modo automático
 if (DOMINIOS_AUTOMATICOS.includes(dominioActual)) {
-  console.log(`[Extractor] Calibrando mensajes previos en ${dominioActual} (inicio: ${obtenerHoraActual()})...`);
+  console.log(`[Extractor] Iniciando lectura de no leídos y vigilancia en ${dominioActual}...`);
   iniciarVigilanteChat();
 
-  // Tras 3.5 segundos de carga inicial, registramos todo lo antiguo y empezamos a capturar solo lo nuevo
+  // Tras 3 segundos de carga inicial, pasamos a capturar cualquier mensaje nuevo que llegue
   setTimeout(() => {
     escanearChats();
-    modoCalibracion = false;
-    console.log(`[Extractor] Vigilante activo en ${dominioActual}: capturando SOLO mensajes nuevos posteriores a ${obtenerHoraActual()}.`);
-  }, 3500);
+    esPrimeraPasada = false;
+    console.log(`[Extractor] Vigilancia en tiempo real activa en ${dominioActual}.`);
+  }, 3000);
 }
 
 function escanearChats() {
@@ -82,11 +58,10 @@ function iniciarVigilanteChat() {
 }
 
 function procesarWhatsApp() {
-  // Lee el último mensaje de todos los chats en la lista izquierda
   document.querySelectorAll('[data-testid="cell-frame-container"]').forEach((fila) => {
     const contacto = fila.querySelector('[data-testid="cell-frame-title"]')?.innerText?.trim() || "";
     const ultimoMensaje = fila.querySelector('[data-testid="last-msg-status"]')?.innerText?.trim();
-    const hora = fila.querySelector('[data-testid="chat-list-timestamp"]')?.innerText?.trim() || "";
+    const hora = fila.querySelector('[data-testid="chat-list-timestamp"]')?.innerText?.trim() || obtenerHoraActual();
 
     if (!ultimoMensaje) return;
 
@@ -94,10 +69,15 @@ function procesarWhatsApp() {
     if (historialEnviados.has(idUnico)) return;
     historialEnviados.add(idUnico);
 
-    if (modoCalibracion) return;
-    if (!esMensajeMasReciente(hora)) return;
+    // Detecta el globo de mensajes sin leer en WhatsApp (por testid o aria-label)
+    const tieneSinLeer = Boolean(
+      fila.querySelector('[data-testid="icon-unread-count"], span[aria-label*="no leído"], span[aria-label*="unread"]')
+    );
 
-    console.log(`[WhatsApp Nuevo ${hora}]: ${ultimoMensaje}`);
+    // En la carga inicial, ignoramos los chats que ya estaban leídos
+    if (esPrimeraPasada && !tieneSinLeer) return;
+
+    console.log(`[WhatsApp ${tieneSinLeer ? 'Sin leer' : 'Nuevo'} ${hora}]: ${ultimoMensaje}`);
 
     enviarAlBackground({
       tipo: "mensaje_chat",
@@ -109,27 +89,28 @@ function procesarWhatsApp() {
 }
 
 function procesarTelegram() {
-  // Lee el último mensaje de todos los chats en la lista izquierda (compatible con Telegram Web K y Web A)
-  const filasChats = document.querySelectorAll('ul.chatlist li, .Chat, .chat-item-clickable');
+  const filasChats = document.querySelectorAll('a.chatlist-chat[data-peer-id], ul.chatlist li, .Chat, .chat-item-clickable');
 
   filasChats.forEach((fila) => {
+    const peerId = fila.getAttribute('data-peer-id') || "";
     const contacto = fila.querySelector('.peer-title, .fullName, h3')?.innerText?.trim() || "";
-    const ultimoMensaje = fila.querySelector('.user-last-message, .last-message, .dialog-subtitle')?.innerText?.trim();
-    const hora = fila.querySelector('.message-time, .time')?.innerText?.trim() || "";
+    const ultimoMensaje = fila.querySelector('.dialog-subtitle-span-last, .dialog-subtitle-parts, .user-last-message, .last-message')?.innerText?.trim();
+    const hora = fila.querySelector('.message-time, .time')?.innerText?.trim() || obtenerHoraActual();
 
     if (!ultimoMensaje) return;
 
-    const idUnico = generarHuella(`tg_lista_${contacto}_${hora}_${ultimoMensaje}`);
+    const idUnico = generarHuella(`tg_lista_${peerId || contacto}_${hora}_${ultimoMensaje}`);
     if (historialEnviados.has(idUnico)) return;
     historialEnviados.add(idUnico);
 
-    // 1. Ignorar durante la carga inicial
-    if (modoCalibracion) return;
+    // Detecta el globo de mensajes sin leer (en Telegram Web K usa .dialog-subtitle-badge-unread.is-visible)
+    const badgeSinLeer = fila.querySelector('.dialog-subtitle-badge-unread.is-visible, .dialog-subtitle-badge.unread, .Badge, .unread');
+    const tieneSinLeer = Boolean(badgeSinLeer && badgeSinLeer.innerText.trim() !== "");
 
-    // 2. Asegurar que la hora del mensaje sea igual o posterior al inicio de la transmisión
-    if (!esMensajeMasReciente(hora)) return;
+    // En la carga inicial, ignoramos los chats que ya estaban leídos
+    if (esPrimeraPasada && !tieneSinLeer) return;
 
-    console.log(`[Telegram Nuevo ${hora}]: ${ultimoMensaje}`);
+    console.log(`[Telegram ${tieneSinLeer ? 'Sin leer' : 'Nuevo'} ${hora}]: ${ultimoMensaje}`);
 
     enviarAlBackground({
       tipo: "mensaje_chat",
@@ -145,7 +126,6 @@ browser.runtime.onMessage.addListener((mensaje) => {
   if (mensaje.accion === "DISPARO_MANUAL") {
     const seleccion = window.getSelection().toString().trim();
     
-    // Si no hay texto seleccionado, busca el bloque principal (<article> o <main>) o usa el body
     let contenidoExtraido = seleccion;
     if (!contenidoExtraido) {
       const contenedorPrincipal = document.querySelector('article, main, [role="main"]') || document.body;
